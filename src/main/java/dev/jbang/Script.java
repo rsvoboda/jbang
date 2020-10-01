@@ -1,7 +1,5 @@
 package dev.jbang;
 
-import static dev.jbang.FileRef.isURL;
-
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -22,6 +20,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import static dev.jbang.FileRef.isURL;
 
 public class Script {
 
@@ -69,6 +69,7 @@ public class Script {
 	private List<String> jvmArgs;
 	private List<FileRef> sources;
 	private List<Path> resolvedSources;
+	private List<Script> javaAgents;
 
 	public Script(ScriptResource resource, String content, List<String> arguments, Map<String, String> properties)
 			throws FileNotFoundException {
@@ -508,5 +509,16 @@ public class Script {
 
 	public List<Path> getResolvedSourcePaths() {
 		return resolvedSources;
+	}
+
+	public void setJavaAgents(Script... preparedScript) {
+		getJavaAgents().addAll(Arrays.asList(preparedScript));
+	}
+
+	public List<Script> getJavaAgents() {
+		if(javaAgents==null) {
+			javaAgents = new ArrayList<>();
+		}
+		return javaAgents;
 	}
 }

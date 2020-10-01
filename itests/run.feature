@@ -19,4 +19,7 @@ Scenario: java run multiple sources
   When command('jbang --verbose one.java')
   Then match out contains "Two"
 
-
+Scenario: java run with agent
+    When command('jbang --verbose -Djul.JULTest=FINEST --javaagent=JULAgent.java JULTest.java World')
+    Then match err contains "info World"
+    Then match err contains "finest World"

@@ -1,21 +1,29 @@
 package dev.jbang.cli;
 
-import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
-import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
-import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
-import static dev.jbang.cli.BaseScriptCommand.prepareScript;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.hasXPath;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.matchesPattern;
-import static org.hamcrest.Matchers.not;
-import static org.hamcrest.Matchers.startsWith;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.fail;
+import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.client.WireMock;
+import dev.jbang.ExitException;
+import dev.jbang.Script;
+import dev.jbang.ScriptResource;
+import dev.jbang.Settings;
+import dev.jbang.Util;
+import org.hamcrest.MatcherAssert;
+import org.hamcrest.collection.IsCollectionWithSize;
+import org.junit.Rule;
+import org.junit.contrib.java.lang.system.EnvironmentVariables;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.w3c.dom.Document;
+import org.xml.sax.InputSource;
+import org.xml.sax.SAXException;
+import picocli.CommandLine;
 
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -34,33 +42,22 @@ import java.util.Optional;
 import java.util.jar.Attributes;
 import java.util.jar.JarFile;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
-
-import org.hamcrest.MatcherAssert;
-import org.hamcrest.collection.IsCollectionWithSize;
-import org.junit.Rule;
-import org.junit.contrib.java.lang.system.EnvironmentVariables;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.w3c.dom.Document;
-import org.xml.sax.InputSource;
-import org.xml.sax.SAXException;
-
-import com.github.tomakehurst.wiremock.WireMockServer;
-import com.github.tomakehurst.wiremock.client.WireMock;
-
-import dev.jbang.ExitException;
-import dev.jbang.Script;
-import dev.jbang.ScriptResource;
-import dev.jbang.Settings;
-import dev.jbang.Util;
-
-import picocli.CommandLine;
+import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
+import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
+import static dev.jbang.cli.BaseScriptCommand.prepareScript;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.endsWith;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasXPath;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.matchesPattern;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.startsWith;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestRun {
 
@@ -619,6 +616,63 @@ public class TestRun {
 
 		assert (run.cds().isPresent());
 		assert (!run.cds().get().booleanValue());
+	}
+
+	@Test
+	void testJavaAgentWithOptionParsing(@TempDir File output) throws IOException {
+
+		String base = "///usr/bin/env jbang \"$0\" \"$@\" ; exit $?\n" +
+				"// //DEPS <dependency1> <dependency2>\n" +
+				"\n" +
+				"import static java.lang.System.*;\n" +
+				"\n" +
+				"class firstclass {\n" +
+				"\n" +
+				"}\n" +
+				"\n" +
+				"public class dualclass {\n" +
+				"\n" +
+				"    public static void main(String... args) {\n" +
+				"        out.println(\"Hello \" + (args.length>0?args[0]:\"World\"));\n" +
+				"    }\n" +
+				"}\n";
+
+		File agentfile = new File(output, "agent.java");
+		Util.writeString(agentfile.toPath(), base.replace("dualclass", "agent"));
+
+		File mainfile = new File(output, "main.java");
+		Util.writeString(mainfile.toPath(), base.replace("dualclass", "main"));
+
+		Jbang jbang = new Jbang();
+		CommandLine.ParseResult pr = new CommandLine(jbang).parseArgs("run", "--javaagent=" + agentfile.getAbsolutePath() + "=optionA", mainfile.getAbsolutePath());
+		Run run = (Run) pr.subcommand().commandSpec().userObject();
+
+		assertThat (run.javaAgent.get(), endsWith("agent.java"));
+		assertThat (run.javaAgentOptions.get(), equalTo("optionA"));
+
+		Script main = new Script(ScriptResource.forFile(mainfile), "", run.userParams, run.properties);
+		Script agent = new Script(ScriptResource.forFile(agentfile), "", run.userParams, run.properties);
+
+		main.setJavaAgents(agent);
+
+		main = run.prepareArtifacts(main);
+
+		String result = run.generateCommandLine(main);
+
+
+		assertThat(result, containsString("-javaagent"));
+		assertThat(result, not(containsString("null")));
+
+	}
+
+	@Test
+	void testJavaAgentParsing() {
+		Jbang jbang = new Jbang();
+		CommandLine.ParseResult pr = new CommandLine(jbang).parseArgs("run", "--javaagent=xyz.jar", "wonka.java");
+		Run run = (Run) pr.subcommand().commandSpec().userObject();
+
+		assertThat (run.javaAgent.get(), equalTo("xyz.jar"));
+		assertThat (run.javaAgentOptions.isPresent(), equalTo(false));
 	}
 
 	@Test

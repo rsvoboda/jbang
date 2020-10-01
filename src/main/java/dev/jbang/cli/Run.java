@@ -1,17 +1,20 @@
 package dev.jbang.cli;
 
+import dev.jbang.Script;
+import dev.jbang.Util;
+import org.apache.commons.text.StringEscapeUtils;
+import picocli.CommandLine;
+
 import java.io.File;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Stack;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-
-import org.apache.commons.text.StringEscapeUtils;
-
-import dev.jbang.*;
-
-import picocli.CommandLine;
 
 @CommandLine.Command(name = "run", description = "Builds and runs provided script.")
 public class Run extends BaseBuildCommand {
@@ -32,6 +35,22 @@ public class Run extends BaseBuildCommand {
 		return debugString != null;
 	}
 
+	Optional<String> javaAgent = Optional.empty();
+	Optional<String> javaAgentOptions = Optional.empty();
+
+	@CommandLine.Option(names = { "--javaagent"})
+	void setJavaAgent(String param) {
+		int eqpos = param.indexOf("=");
+
+		if(eqpos>=0) {
+			javaAgent = Optional.of(param.substring(0, eqpos));
+			javaAgentOptions = Optional.of(param.substring(eqpos + 1));
+		} else {
+			javaAgent = Optional.of(param);
+			javaAgentOptions = Optional.empty();
+		}
+	}
+
 	@CommandLine.Option(names = { "--interactive" }, description = "activate interactive mode")
 	boolean interactive;
 
@@ -41,17 +60,29 @@ public class Run extends BaseBuildCommand {
 			enableInsecure();
 		}
 
-		script = prepareScript(scriptOrFile, userParams, properties, dependencies, classpaths);
-
-		if (script.needsJar()) {
-			build(script);
-		}
+		script = prepareArtifacts(prepareScript(scriptOrFile, userParams, properties, dependencies, classpaths));
 
 		String cmdline = generateCommandLine(script);
 		debug("run: " + cmdline);
 		out.println(cmdline);
 
 		return EXIT_EXECUTE;
+	}
+
+	Script prepareArtifacts(Script script) throws IOException {
+		if (script.needsJar()) {
+			build(script);
+		}
+
+		if(javaAgent.isPresent()) {
+			Script agentScript = prepareScript(javaAgent.get(), userParams, properties, dependencies, classpaths);
+			if(agentScript.needsJar()) {
+				info("Building javaagent...");
+				build(agentScript);
+			}
+			script.setJavaAgents(agentScript);
+		}
+		return script;
 	}
 
 	String generateCommandLine(Script script) throws IOException {
@@ -133,7 +164,17 @@ public class Run extends BaseBuildCommand {
 			}
 
 			fullArgs.add(javacmd);
-			fullArgs.addAll(script.collectRuntimeOptions());
+			script.getJavaAgents().forEach(agent -> {
+				//for now we don't included any transitive dependencies. could consider putting on bootclasspath...or not.
+				if(agent.getJar()!=null) {
+					fullArgs.add("-javaagent:" + agent.getJar());
+				} else {
+					//should we log a warning/error if agent jar not present ?
+				}
+			});
+
+
+ 			fullArgs.addAll(script.collectRuntimeOptions());
 			fullArgs.addAll(script.getAutoDetectedModuleArguments(requestedJavaVersion, offline));
 			fullArgs.addAll(optionalArgs);
 
